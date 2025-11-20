@@ -1,2 +1,11 @@
 config:
   azure-native:location: EastUS2
+  arm-conversion:environment: dev
+  arm-conversion:projectName: testproject
+  arm-conversion:sqlAdminUsername: sqladmin
+  arm-conversion:sqlAdminPassword:
+    secure: AAABAOVZ0BQngj0ijRWbCzyLxZvmRf2ZduFgAI+JW3CtczbCuKmuidAV9sisIKfl
+  arm-conversion:userObjectId: cecb2b78-587d-469e-b5cc-07d0adf94071
+  arm-conversion:storageAccountName: testdevstg01xyz
+environment:
+  - azure-oidc/bsd
