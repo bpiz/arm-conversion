@@ -306,9 +306,17 @@ const userObjectId = config.require("userObjectId");
 const tenantId = pulumi.output(azure_native.authorization.getClientConfig()).tenantId;
 
 // Key Vault - name must be 3-24 chars, alphanumeric and hyphens only
+// Generate a short unique suffix from resource group ID
+const keyVaultName = resourceGroup.id.apply(id => {
+    const rgName = id.split('/').pop() || 'default';
+    const hash = rgName.substring(0, 6);
+    return `${projectName}-${environment}-kv-${hash}`.substring(0, 24);
+});
+
 const keyVault = new azure_native.keyvault.Vault("keyVault", {
     resourceGroupName: resourceGroup.name,
     location: location,
+    vaultName: keyVaultName,
     properties: {
         sku: {
             family: "A",
@@ -449,9 +457,18 @@ const appService = new azure_native.web.WebApp("appService", {
 // SQL Server
 const sqlAdminUsername = config.require("sqlAdminUsername");
 const sqlAdminPassword = config.requireSecret("sqlAdminPassword");
+
+// SQL Server name - must be globally unique, lowercase letters, numbers, and hyphens
+const sqlServerName = resourceGroup.id.apply(id => {
+    const rgName = id.split('/').pop() || 'default';
+    const hash = rgName.substring(0, 8).toLowerCase();
+    return `${projectName}-${environment}-sql-${hash}`;
+});
+
 const sqlServer = new azure_native.sql.Server("sqlServer", {
     resourceGroupName: resourceGroup.name,
     location: location,
+    serverName: sqlServerName,
     administratorLogin: sqlAdminUsername,
     administratorLoginPassword: sqlAdminPassword,
     version: "12.0",
