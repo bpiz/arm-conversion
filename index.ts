@@ -305,12 +305,10 @@ const storagePrivateDnsZoneGroup = new azure_native.network.PrivateDnsZoneGroup(
 const userObjectId = config.require("userObjectId");
 const tenantId = pulumi.output(azure_native.authorization.getClientConfig()).tenantId;
 
-// Key Vault
-const keyVaultName = pulumi.interpolate`${projectName}-${environment}-kv-${resourceGroup.id.apply(id => id.split('/').pop()?.substring(0, 8) || 'default')}`;
+// Key Vault - name must be 3-24 chars, alphanumeric and hyphens only
 const keyVault = new azure_native.keyvault.Vault("keyVault", {
     resourceGroupName: resourceGroup.name,
     location: location,
-    vaultName: keyVaultName,
     properties: {
         sku: {
             family: "A",
@@ -451,11 +449,9 @@ const appService = new azure_native.web.WebApp("appService", {
 // SQL Server
 const sqlAdminUsername = config.require("sqlAdminUsername");
 const sqlAdminPassword = config.requireSecret("sqlAdminPassword");
-const sqlServerName = pulumi.interpolate`${projectName}-${environment}-sql-${resourceGroup.id.apply(id => id.split('/').pop()?.substring(0, 8) || 'default')}`;
 const sqlServer = new azure_native.sql.Server("sqlServer", {
     resourceGroupName: resourceGroup.name,
     location: location,
-    serverName: sqlServerName,
     administratorLogin: sqlAdminUsername,
     administratorLoginPassword: sqlAdminPassword,
     version: "12.0",
@@ -527,7 +523,6 @@ const sqlPrivateDnsZoneGroup = new azure_native.network.PrivateDnsZoneGroup("sql
 
 // Databricks Workspace
 const databricksWorkspaceName = `${projectName}-${environment}-dbw`;
-const databricksManagedResourceGroupName = pulumi.interpolate`databricks-rg-${databricksWorkspaceName}-${resourceGroup.id.apply(id => id.split('/').pop()?.substring(0, 8) || 'default')}`;
 const databricksWorkspace = new azure_native.databricks.Workspace("databricksWorkspace", {
     resourceGroupName: resourceGroup.name,
     location: location,
@@ -535,7 +530,7 @@ const databricksWorkspace = new azure_native.databricks.Workspace("databricksWor
     sku: {
         name: "standard",
     },
-    managedResourceGroupId: pulumi.interpolate`/subscriptions/${azure_native.authorization.getClientConfigOutput().subscriptionId}/resourceGroups/${databricksManagedResourceGroupName}`,
+    managedResourceGroupId: pulumi.interpolate`/subscriptions/${azure_native.authorization.getClientConfigOutput().subscriptionId}/resourceGroups/databricks-rg-${databricksWorkspaceName}`,
     parameters: {
         customVirtualNetworkId: {
             value: vnet.id,
