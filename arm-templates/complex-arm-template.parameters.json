@@ -1,0 +1,21 @@
+{
+	"$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"environment": {
+			"value": "dev"
+		},
+		"projectName": {
+			"value": "testproject"
+		},
+		"sqlAdminUsername": {
+			"value": "sqladmin"
+		},
+		"storageAccountName": {
+			"value": "testdevstg01xyz"
+		},
+		"userObjectId": {
+			"value": "cecb2b78-587d-469e-b5cc-07d0adf94071"
+		}
+	}
+}

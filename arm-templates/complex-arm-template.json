@@ -1,0 +1,791 @@
+{
+	"$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"location": {
+			"type": "string",
+			"defaultValue": "[resourceGroup().location]",
+			"metadata": {
+				"description": "Location for all resources"
+			}
+		},
+		"environment": {
+			"type": "string",
+			"defaultValue": "dev",
+			"allowedValues": ["dev", "test", "prod"],
+			"metadata": {
+				"description": "Environment name"
+			}
+		},
+		"projectName": {
+			"type": "string",
+			"defaultValue": "testproject",
+			"metadata": {
+				"description": "Project name used for naming resources"
+			}
+		},
+		"sqlAdminUsername": {
+			"type": "string",
+			"defaultValue": "sqladmin",
+			"metadata": {
+				"description": "SQL Server administrator username"
+			}
+		},
+		"sqlAdminPassword": {
+			"type": "securestring",
+			"metadata": {
+				"description": "SQL Server administrator password"
+			}
+		},
+		"tenantId": {
+			"type": "string",
+			"defaultValue": "[subscription().tenantId]",
+			"metadata": {
+				"description": "Azure AD Tenant ID"
+			}
+		},
+		"userObjectId": {
+			"type": "string",
+			"metadata": {
+				"description": "Object ID of the user to grant KeyVault access"
+			}
+		},
+		"storageAccountName": {
+			"type": "string",
+			"maxLength": 24,
+			"minLength": 3,
+			"metadata": {
+				"description": "Storage account name (3-24 chars, lowercase and numbers only)"
+			}
+		}
+	},
+	"variables": {
+		"vnetName": "[concat(parameters('projectName'), '-', parameters('environment'), '-vnet')]",
+		"keyVaultName": "[concat(parameters('projectName'), '-', parameters('environment'), '-kv-', uniqueString(resourceGroup().id))]",
+		"appServicePlanName": "[concat(parameters('projectName'), '-', parameters('environment'), '-asp')]",
+		"appServiceName": "[concat(parameters('projectName'), '-', parameters('environment'), '-app')]",
+		"sqlServerName": "[concat(parameters('projectName'), '-', parameters('environment'), '-sql-', uniqueString(resourceGroup().id))]",
+		"sqlDatabaseName": "[concat(parameters('projectName'), '-', parameters('environment'), '-db')]",
+		"databricksWorkspaceName": "[concat(parameters('projectName'), '-', parameters('environment'), '-dbw')]",
+		"databricksManagedResourceGroupName": "[concat('databricks-rg-', variables('databricksWorkspaceName'), '-', uniqueString(variables('databricksWorkspaceName'), resourceGroup().id))]",
+		"appServiceSubnetName": "snet-appservice",
+		"storageSubnetName": "snet-storage",
+		"sqlSubnetName": "snet-sql",
+		"databricksPublicSubnetName": "snet-databricks-public",
+		"databricksPrivateSubnetName": "snet-databricks-private",
+		"keyVaultSubnetName": "snet-keyvault",
+		"privateEndpointSubnetName": "snet-privateendpoints",
+		"appServiceNsgName": "[concat(parameters('projectName'), '-', parameters('environment'), '-nsg-appservice')]",
+		"storageNsgName": "[concat(parameters('projectName'), '-', parameters('environment'), '-nsg-storage')]",
+		"sqlNsgName": "[concat(parameters('projectName'), '-', parameters('environment'), '-nsg-sql')]",
+		"databricksNsgName": "[concat(parameters('projectName'), '-', parameters('environment'), '-nsg-databricks')]",
+		"keyVaultNsgName": "[concat(parameters('projectName'), '-', parameters('environment'), '-nsg-keyvault')]",
+		"privateEndpointNsgName": "[concat(parameters('projectName'), '-', parameters('environment'), '-nsg-pe')]",
+		"storagePrivateEndpointName": "[concat(parameters('projectName'), '-', parameters('environment'), '-pe-storage')]",
+		"keyVaultPrivateEndpointName": "[concat(parameters('projectName'), '-', parameters('environment'), '-pe-keyvault')]",
+		"sqlPrivateEndpointName": "[concat(parameters('projectName'), '-', parameters('environment'), '-pe-sql')]",
+		"privateDnsZoneStorageBlob": "privatelink.blob.core.windows.net",
+		"privateDnsZoneKeyVault": "privatelink.vaultcore.azure.net",
+		"privateDnsZoneSql": "privatelink.database.windows.net"
+	},
+	"resources": [
+		{
+			"type": "Microsoft.Network/networkSecurityGroups",
+			"apiVersion": "2023-05-01",
+			"name": "[variables('appServiceNsgName')]",
+			"location": "[parameters('location')]",
+			"properties": {
+				"securityRules": [
+					{
+						"name": "AllowHTTPS",
+						"properties": {
+							"priority": 100,
+							"direction": "Inbound",
+							"access": "Allow",
+							"protocol": "Tcp",
+							"sourcePortRange": "*",
+							"destinationPortRange": "443",
+							"sourceAddressPrefix": "Internet",
+							"destinationAddressPrefix": "*"
+						}
+					},
+					{
+						"name": "AllowHTTP",
+						"properties": {
+							"priority": 110,
+							"direction": "Inbound",
+							"access": "Allow",
+							"protocol": "Tcp",
+							"sourcePortRange": "*",
+							"destinationPortRange": "80",
+							"sourceAddressPrefix": "Internet",
+							"destinationAddressPrefix": "*"
+						}
+					}
+				]
+			}
+		},
+		{
+			"type": "Microsoft.Network/networkSecurityGroups",
+			"apiVersion": "2023-05-01",
+			"name": "[variables('storageNsgName')]",
+			"location": "[parameters('location')]",
+			"properties": {
+				"securityRules": [
+					{
+						"name": "DenyAllInbound",
+						"properties": {
+							"priority": 100,
+							"direction": "Inbound",
+							"access": "Deny",
+							"protocol": "*",
+							"sourcePortRange": "*",
+							"destinationPortRange": "*",
+							"sourceAddressPrefix": "*",
+							"destinationAddressPrefix": "*"
+						}
+					}
+				]
+			}
+		},
+		{
+			"type": "Microsoft.Network/networkSecurityGroups",
+			"apiVersion": "2023-05-01",
+			"name": "[variables('sqlNsgName')]",
+			"location": "[parameters('location')]",
+			"properties": {
+				"securityRules": [
+					{
+						"name": "AllowVnetInbound",
+						"properties": {
+							"priority": 100,
+							"direction": "Inbound",
+							"access": "Allow",
+							"protocol": "Tcp",
+							"sourcePortRange": "*",
+							"destinationPortRange": "1433",
+							"sourceAddressPrefix": "VirtualNetwork",
+							"destinationAddressPrefix": "*"
+						}
+					},
+					{
+						"name": "DenyAllInbound",
+						"properties": {
+							"priority": 200,
+							"direction": "Inbound",
+							"access": "Deny",
+							"protocol": "*",
+							"sourcePortRange": "*",
+							"destinationPortRange": "*",
+							"sourceAddressPrefix": "*",
+							"destinationAddressPrefix": "*"
+						}
+					}
+				]
+			}
+		},
+		{
+			"type": "Microsoft.Network/networkSecurityGroups",
+			"apiVersion": "2023-05-01",
+			"name": "[variables('databricksNsgName')]",
+			"location": "[parameters('location')]",
+			"properties": {
+				"securityRules": []
+			}
+		},
+		{
+			"type": "Microsoft.Network/networkSecurityGroups",
+			"apiVersion": "2023-05-01",
+			"name": "[variables('keyVaultNsgName')]",
+			"location": "[parameters('location')]",
+			"properties": {
+				"securityRules": [
+					{
+						"name": "AllowVnetInbound",
+						"properties": {
+							"priority": 100,
+							"direction": "Inbound",
+							"access": "Allow",
+							"protocol": "Tcp",
+							"sourcePortRange": "*",
+							"destinationPortRange": "443",
+							"sourceAddressPrefix": "VirtualNetwork",
+							"destinationAddressPrefix": "*"
+						}
+					}
+				]
+			}
+		},
+		{
+			"type": "Microsoft.Network/networkSecurityGroups",
+			"apiVersion": "2023-05-01",
+			"name": "[variables('privateEndpointNsgName')]",
+			"location": "[parameters('location')]",
+			"properties": {
+				"securityRules": []
+			}
+		},
+		{
+			"type": "Microsoft.Network/virtualNetworks",
+			"apiVersion": "2023-05-01",
+			"name": "[variables('vnetName')]",
+			"location": "[parameters('location')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.Network/networkSecurityGroups', variables('appServiceNsgName'))]",
+				"[resourceId('Microsoft.Network/networkSecurityGroups', variables('storageNsgName'))]",
+				"[resourceId('Microsoft.Network/networkSecurityGroups', variables('sqlNsgName'))]",
+				"[resourceId('Microsoft.Network/networkSecurityGroups', variables('databricksNsgName'))]",
+				"[resourceId('Microsoft.Network/networkSecurityGroups', variables('keyVaultNsgName'))]",
+				"[resourceId('Microsoft.Network/networkSecurityGroups', variables('privateEndpointNsgName'))]"
+			],
+			"properties": {
+				"addressSpace": {
+					"addressPrefixes": ["10.0.0.0/16"]
+				},
+				"subnets": [
+					{
+						"name": "[variables('appServiceSubnetName')]",
+						"properties": {
+							"addressPrefix": "10.0.1.0/24",
+							"networkSecurityGroup": {
+								"id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('appServiceNsgName'))]"
+							},
+							"delegations": [
+								{
+									"name": "delegation",
+									"properties": {
+										"serviceName": "Microsoft.Web/serverfarms"
+									}
+								}
+							]
+						}
+					},
+					{
+						"name": "[variables('storageSubnetName')]",
+						"properties": {
+							"addressPrefix": "10.0.2.0/24",
+							"networkSecurityGroup": {
+								"id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('storageNsgName'))]"
+							},
+							"serviceEndpoints": [
+								{
+									"service": "Microsoft.Storage"
+								}
+							]
+						}
+					},
+					{
+						"name": "[variables('sqlSubnetName')]",
+						"properties": {
+							"addressPrefix": "10.0.3.0/24",
+							"networkSecurityGroup": {
+								"id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('sqlNsgName'))]"
+							},
+							"serviceEndpoints": [
+								{
+									"service": "Microsoft.Sql"
+								}
+							]
+						}
+					},
+					{
+						"name": "[variables('databricksPublicSubnetName')]",
+						"properties": {
+							"addressPrefix": "10.0.4.0/24",
+							"networkSecurityGroup": {
+								"id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('databricksNsgName'))]"
+							},
+							"delegations": [
+								{
+									"name": "databricks-del-public",
+									"properties": {
+										"serviceName": "Microsoft.Databricks/workspaces"
+									}
+								}
+							]
+						}
+					},
+					{
+						"name": "[variables('databricksPrivateSubnetName')]",
+						"properties": {
+							"addressPrefix": "10.0.5.0/24",
+							"networkSecurityGroup": {
+								"id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('databricksNsgName'))]"
+							},
+							"delegations": [
+								{
+									"name": "databricks-del-private",
+									"properties": {
+										"serviceName": "Microsoft.Databricks/workspaces"
+									}
+								}
+							]
+						}
+					},
+					{
+						"name": "[variables('keyVaultSubnetName')]",
+						"properties": {
+							"addressPrefix": "10.0.6.0/24",
+							"networkSecurityGroup": {
+								"id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('keyVaultNsgName'))]"
+							},
+							"serviceEndpoints": [
+								{
+									"service": "Microsoft.KeyVault"
+								}
+							]
+						}
+					},
+					{
+						"name": "[variables('privateEndpointSubnetName')]",
+						"properties": {
+							"addressPrefix": "10.0.7.0/24",
+							"networkSecurityGroup": {
+								"id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('privateEndpointNsgName'))]"
+							},
+							"privateEndpointNetworkPolicies": "Disabled",
+							"privateLinkServiceNetworkPolicies": "Enabled"
+						}
+					}
+				]
+			}
+		},
+		{
+			"type": "Microsoft.Storage/storageAccounts",
+			"apiVersion": "2023-01-01",
+			"name": "[parameters('storageAccountName')]",
+			"location": "[parameters('location')]",
+			"sku": {
+				"name": "Standard_LRS"
+			},
+			"kind": "StorageV2",
+			"properties": {
+				"accessTier": "Hot",
+				"supportsHttpsTrafficOnly": true,
+				"minimumTlsVersion": "TLS1_2",
+				"allowBlobPublicAccess": false,
+				"networkAcls": {
+					"defaultAction": "Deny",
+					"bypass": "AzureServices",
+					"virtualNetworkRules": [
+						{
+							"id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('storageSubnetName'))]"
+						}
+					]
+				}
+			},
+			"dependsOn": [
+				"[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+			]
+		},
+		{
+			"type": "Microsoft.KeyVault/vaults",
+			"apiVersion": "2023-07-01",
+			"name": "[variables('keyVaultName')]",
+			"location": "[parameters('location')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+			],
+			"properties": {
+				"sku": {
+					"family": "A",
+					"name": "standard"
+				},
+				"tenantId": "[parameters('tenantId')]",
+				"accessPolicies": [
+					{
+						"tenantId": "[parameters('tenantId')]",
+						"objectId": "[parameters('userObjectId')]",
+						"permissions": {
+							"keys": [
+								"get",
+								"list",
+								"create",
+								"update",
+								"import",
+								"delete",
+								"backup",
+								"restore"
+							],
+							"secrets": [
+								"get",
+								"list",
+								"set",
+								"delete",
+								"backup",
+								"restore"
+							],
+							"certificates": [
+								"get",
+								"list",
+								"create",
+								"update",
+								"delete"
+							]
+						}
+					}
+				],
+				"enabledForDeployment": true,
+				"enabledForTemplateDeployment": true,
+				"enabledForDiskEncryption": true,
+				"enableSoftDelete": true,
+				"softDeleteRetentionInDays": 90,
+				"enablePurgeProtection": true,
+				"networkAcls": {
+					"defaultAction": "Deny",
+					"bypass": "AzureServices",
+					"virtualNetworkRules": [
+						{
+							"id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('keyVaultSubnetName'))]"
+						}
+					]
+				}
+			}
+		},
+		{
+			"type": "Microsoft.Web/serverfarms",
+			"apiVersion": "2022-09-01",
+			"name": "[variables('appServicePlanName')]",
+			"location": "[parameters('location')]",
+			"sku": {
+				"name": "S1",
+				"tier": "Standard"
+			},
+			"kind": "linux",
+			"properties": {
+				"reserved": true
+			}
+		},
+		{
+			"type": "Microsoft.Web/sites",
+			"apiVersion": "2022-09-01",
+			"name": "[variables('appServiceName')]",
+			"location": "[parameters('location')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+				"[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+			],
+			"kind": "app,linux",
+			"properties": {
+				"serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+				"siteConfig": {
+					"linuxFxVersion": "DOTNETCORE|7.0",
+					"alwaysOn": true,
+					"ftpsState": "Disabled",
+					"minTlsVersion": "1.2",
+					"http20Enabled": true
+				},
+				"httpsOnly": true,
+				"virtualNetworkSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('appServiceSubnetName'))]"
+			}
+		},
+		{
+			"type": "Microsoft.Sql/servers",
+			"apiVersion": "2022-11-01-preview",
+			"name": "[variables('sqlServerName')]",
+			"location": "[parameters('location')]",
+			"properties": {
+				"administratorLogin": "[parameters('sqlAdminUsername')]",
+				"administratorLoginPassword": "[parameters('sqlAdminPassword')]",
+				"version": "12.0",
+				"minimalTlsVersion": "1.2",
+				"publicNetworkAccess": "Disabled"
+			}
+		},
+		{
+			"type": "Microsoft.Sql/servers/databases",
+			"apiVersion": "2022-11-01-preview",
+			"name": "[concat(variables('sqlServerName'), '/', variables('sqlDatabaseName'))]",
+			"location": "[parameters('location')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+			],
+			"sku": {
+				"name": "Basic",
+				"tier": "Basic"
+			},
+			"properties": {
+				"collation": "SQL_Latin1_General_CP1_CI_AS"
+			}
+		},
+		{
+			"type": "Microsoft.Databricks/workspaces",
+			"apiVersion": "2023-02-01",
+			"name": "[variables('databricksWorkspaceName')]",
+			"location": "[parameters('location')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+			],
+			"sku": {
+				"name": "standard"
+			},
+			"properties": {
+				"managedResourceGroupId": "[concat(subscription().id, '/resourceGroups/', variables('databricksManagedResourceGroupName'))]",
+				"parameters": {
+					"customVirtualNetworkId": {
+						"value": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+					},
+					"customPublicSubnetName": {
+						"value": "[variables('databricksPublicSubnetName')]"
+					},
+					"customPrivateSubnetName": {
+						"value": "[variables('databricksPrivateSubnetName')]"
+					},
+					"enableNoPublicIp": {
+						"value": true
+					}
+				}
+			}
+		},
+		{
+			"type": "Microsoft.Network/privateDnsZones",
+			"apiVersion": "2020-06-01",
+			"name": "[variables('privateDnsZoneStorageBlob')]",
+			"location": "global",
+			"properties": {}
+		},
+		{
+			"type": "Microsoft.Network/privateDnsZones",
+			"apiVersion": "2020-06-01",
+			"name": "[variables('privateDnsZoneKeyVault')]",
+			"location": "global",
+			"properties": {}
+		},
+		{
+			"type": "Microsoft.Network/privateDnsZones",
+			"apiVersion": "2020-06-01",
+			"name": "[variables('privateDnsZoneSql')]",
+			"location": "global",
+			"properties": {}
+		},
+		{
+			"type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+			"apiVersion": "2020-06-01",
+			"name": "[concat(variables('privateDnsZoneStorageBlob'), '/link-to-', variables('vnetName'))]",
+			"location": "global",
+			"dependsOn": [
+				"[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneStorageBlob'))]",
+				"[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+			],
+			"properties": {
+				"registrationEnabled": false,
+				"virtualNetwork": {
+					"id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+				}
+			}
+		},
+		{
+			"type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+			"apiVersion": "2020-06-01",
+			"name": "[concat(variables('privateDnsZoneKeyVault'), '/link-to-', variables('vnetName'))]",
+			"location": "global",
+			"dependsOn": [
+				"[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneKeyVault'))]",
+				"[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+			],
+			"properties": {
+				"registrationEnabled": false,
+				"virtualNetwork": {
+					"id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+				}
+			}
+		},
+		{
+			"type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+			"apiVersion": "2020-06-01",
+			"name": "[concat(variables('privateDnsZoneSql'), '/link-to-', variables('vnetName'))]",
+			"location": "global",
+			"dependsOn": [
+				"[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneSql'))]",
+				"[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+			],
+			"properties": {
+				"registrationEnabled": false,
+				"virtualNetwork": {
+					"id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+				}
+			}
+		},
+		{
+			"type": "Microsoft.Network/privateEndpoints",
+			"apiVersion": "2023-05-01",
+			"name": "[variables('storagePrivateEndpointName')]",
+			"location": "[parameters('location')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+				"[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+			],
+			"properties": {
+				"subnet": {
+					"id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]"
+				},
+				"privateLinkServiceConnections": [
+					{
+						"name": "storage-privatelink",
+						"properties": {
+							"privateLinkServiceId": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+							"groupIds": ["blob"]
+						}
+					}
+				]
+			}
+		},
+		{
+			"type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+			"apiVersion": "2023-05-01",
+			"name": "[concat(variables('storagePrivateEndpointName'), '/default')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.Network/privateEndpoints', variables('storagePrivateEndpointName'))]",
+				"[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneStorageBlob'))]"
+			],
+			"properties": {
+				"privateDnsZoneConfigs": [
+					{
+						"name": "storage-blob-dns",
+						"properties": {
+							"privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneStorageBlob'))]"
+						}
+					}
+				]
+			}
+		},
+		{
+			"type": "Microsoft.Network/privateEndpoints",
+			"apiVersion": "2023-05-01",
+			"name": "[variables('keyVaultPrivateEndpointName')]",
+			"location": "[parameters('location')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+				"[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+			],
+			"properties": {
+				"subnet": {
+					"id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]"
+				},
+				"privateLinkServiceConnections": [
+					{
+						"name": "keyvault-privatelink",
+						"properties": {
+							"privateLinkServiceId": "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+							"groupIds": ["vault"]
+						}
+					}
+				]
+			}
+		},
+		{
+			"type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+			"apiVersion": "2023-05-01",
+			"name": "[concat(variables('keyVaultPrivateEndpointName'), '/default')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.Network/privateEndpoints', variables('keyVaultPrivateEndpointName'))]",
+				"[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneKeyVault'))]"
+			],
+			"properties": {
+				"privateDnsZoneConfigs": [
+					{
+						"name": "keyvault-dns",
+						"properties": {
+							"privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneKeyVault'))]"
+						}
+					}
+				]
+			}
+		},
+		{
+			"type": "Microsoft.Network/privateEndpoints",
+			"apiVersion": "2023-05-01",
+			"name": "[variables('sqlPrivateEndpointName')]",
+			"location": "[parameters('location')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]",
+				"[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+			],
+			"properties": {
+				"subnet": {
+					"id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]"
+				},
+				"privateLinkServiceConnections": [
+					{
+						"name": "sql-privatelink",
+						"properties": {
+							"privateLinkServiceId": "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]",
+							"groupIds": ["sqlServer"]
+						}
+					}
+				]
+			}
+		},
+		{
+			"type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+			"apiVersion": "2023-05-01",
+			"name": "[concat(variables('sqlPrivateEndpointName'), '/default')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.Network/privateEndpoints', variables('sqlPrivateEndpointName'))]",
+				"[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneSql'))]"
+			],
+			"properties": {
+				"privateDnsZoneConfigs": [
+					{
+						"name": "sql-dns",
+						"properties": {
+							"privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneSql'))]"
+						}
+					}
+				]
+			}
+		},
+		{
+			"type": "Microsoft.Authorization/roleAssignments",
+			"apiVersion": "2022-04-01",
+			"name": "[guid(subscription().id, resourceGroup().id, 'storage-contributor')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+			],
+			"properties": {
+				"roleDefinitionId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Authorization/roleDefinitions/17d1049b-9a84-46fb-8f53-869881c3d3ab')]",
+				"principalId": "[parameters('userObjectId')]",
+				"scope": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+			}
+		},
+		{
+			"type": "Microsoft.Authorization/roleAssignments",
+			"apiVersion": "2022-04-01",
+			"name": "[guid(subscription().id, resourceGroup().id, 'sql-contributor')]",
+			"dependsOn": [
+				"[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+			],
+			"properties": {
+				"roleDefinitionId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Authorization/roleDefinitions/6d8ee4ec-f05a-4a1d-8b00-a9b17e38b437')]",
+				"principalId": "[parameters('userObjectId')]",
+				"scope": "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+			}
+		}
+	],
+	"outputs": {
+		"vnetId": {
+			"type": "string",
+			"value": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+		},
+		"storageAccountId": {
+			"type": "string",
+			"value": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+		},
+		"keyVaultUri": {
+			"type": "string",
+			"value": "[reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))).vaultUri]"
+		},
+		"appServiceUrl": {
+			"type": "string",
+			"value": "[concat('https://', reference(resourceId('Microsoft.Web/sites', variables('appServiceName'))).defaultHostName)]"
+		},
+		"sqlServerFqdn": {
+			"type": "string",
+			"value": "[reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName'))).fullyQualifiedDomainName]"
+		},
+		"databricksWorkspaceUrl": {
+			"type": "string",
+			"value": "[concat('https://', reference(resourceId('Microsoft.Databricks/workspaces', variables('databricksWorkspaceName'))).workspaceUrl)]"
+		}
+	}
+}
